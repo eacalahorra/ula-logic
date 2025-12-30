@@ -2,7 +2,7 @@
 //  DataManager.swift
 //  ULA Period Tracker
 //
-//  Created by eacalahorra.
+//  Created by eacalahorra on 19/11/25.
 //  It should work(?) I tried my best.
 
 import Foundation
@@ -58,9 +58,9 @@ class DataManager: ObservableObject {
     private let predictionEngine = PredictionEngine()
     private let phaseEngine = PhaseEngine()
     private let storage = JSONStorage()
-    private let entriesFile = "DayEntry.json"
+    private let legacyEntriesFile = "DayEntry.json" // Legacy Storage, see Schema.
     private let moonEngine = MoonPhaseEngine()
-    private let sexEventsFile = "SexEvents.json"
+    private let legacySexEventsFile = "SexEvents.json" // Legacy Storage, see Schema.
     private let schemaFile = "ULAData.json"
     private let currentSchemaVersion = 1
     private let symptomsEngine = SymptomsEngine()
@@ -136,7 +136,7 @@ class DataManager: ObservableObject {
             let startOfDay = Calendar.current.startOfDay(for: date)
             // Moon Phases
             moonPhases[startOfDay] = moonEngine.phase(for: startOfDay)
-            // MARK MENSTRUAL PHASES
+            // MARK: MENSTRUAL PHASES
             phases[startOfDay] = phaseEngine.phase(
                 for: startOfDay,
                 lastPeriodStart: lastPeriodStart,
@@ -151,27 +151,27 @@ class DataManager: ObservableObject {
     
     // MARK: JSON Storage.
     func loadEntries() {
-        if let loaded: [DayEntry] = storage.load([DayEntry].self, from: entriesFile) {
-            entries = loaded
-        } else {
-            entries = []
-        }
+        loadSchema()
     }
     
     func saveEntries() {
-        storage.save(entries, to: entriesFile)
+        saveSchema()
     }
     
     func loadSexEvents() {
-        if let loaded: [SexEvent] = storage.load([SexEvent].self, from: sexEventsFile) {
-            sexEvents = loaded
-        } else {
-            sexEvents = []
-        }
+       loadSchema()
     }
     
     func saveSexEvents() {
-        storage.save(sexEvents, to: sexEventsFile)
+        saveSchema()
+    }
+    
+    private func legacyLoadEntries() -> [DayEntry] {
+        storage.load([DayEntry].self, from: legacyEntriesFile) ?? []
+    }
+    
+    private func legacyLoadSexEvents() -> [SexEvent] {
+        storage.load([SexEvent].self, from: legacySexEventsFile) ?? []
     }
     
     // MARK: - Remember Entry Action
@@ -183,7 +183,7 @@ class DataManager: ObservableObject {
             entries.append(entry)
         }
         entries.sort { $0.date < $1.date }
-        saveEntries()
+        saveSchema()
         refreshAllLogic()
     }
 
@@ -204,14 +204,14 @@ class DataManager: ObservableObject {
         }
         
         entries.sort { $0.date < $1.date }
-        saveEntries()
+        saveSchema()
         refreshAllLogic()
         debugPrintState(label: "logBleeding on \(normalized)")
     }
     
     func startPeriod(on date: Date = Date(), bleedingLevel: Int = 1) {
         // If user starts a period, this is a manual override of any prediction.
-        // for validation -- refuse future dates.
+        // Validation: refuse future dates.
         let cal = Calendar.current
         let today = cal.startOfDay(for: Date())
         let normalized = cal.startOfDay(for: date)
@@ -221,7 +221,7 @@ class DataManager: ObservableObject {
             return
         }
         
-        // Snapshot current prediction window so can be undone if need be
+        // Snapshot current prediction window so we can undo later if needed.
         if let currentPred = predictions {
             lastPredictionSnapshot = PredictionSnapshot(
                 min: currentPred.min,
@@ -250,7 +250,7 @@ class DataManager: ObservableObject {
         }
         
         entries.sort { $0.date < $1.date }
-        saveEntries()
+        saveSchema()
         refreshAllLogic()
         debugPrintState(label: "startPeriod on \(normalized)")
     }
@@ -264,7 +264,7 @@ class DataManager: ObservableObject {
         }
         
         entries.sort { $0.date < $1.date }
-        saveEntries()
+        saveSchema()
         refreshAllLogic()
         
         // If we have a previous prediction snapshot, restore it.
@@ -279,10 +279,10 @@ class DataManager: ObservableObject {
         let event = SexEvent(id: UUID(), date: date, protected: protected)
         sexEvents.append(event)
         sexEvents.sort { $0.date < $1.date }
-        saveSexEvents()
+        saveSchema()
         debugPrintState(label: "addSexEvent on \(date)")
     }
-    // Groups multiple sexEvents in 1 date to show in CalendarView -- Remember, people can have >1 sexEvent/day...
+    // Groups multiple sexEvents in 1 date to show in Calendar View -- Takes into consideration people can have >1 sexEvent/day
     func sexEventsByDay() -> [Date: [SexEvent]] {
         var dict: [Date: [SexEvent]] = [:]
         let cal = Calendar.current
@@ -299,8 +299,10 @@ class DataManager: ObservableObject {
         let cal = Calendar.current
         let normalized = cal.startOfDay(for: date)
         
+        // Remove existing symptoms for that day
         symptoms.removeAll { cal.isDate($0.date, inSameDayAs: normalized) }
         
+        // Add new set
         let newSymptoms: [Symptom] = symptomTypes.map { type in
             Symptom(
                 id: UUID(),
@@ -312,10 +314,10 @@ class DataManager: ObservableObject {
         }
         
         symptoms.append(contentsOf: newSymptoms)
-        // Sort if needed.
+        // Optionally sort if needed
         symptoms.sort { $0.date < $1.date }
         
-        // Persist via schema, not specialized file.
+        // Persist via schema
         saveSchema()
         debugPrintState(label: "logSymptoms on \(normalized)")
     }
@@ -349,8 +351,10 @@ class DataManager: ObservableObject {
         } else {
             print ("No schema found. ATTEMPTING LEGACY LOAD.")
             
-            loadEntries()
-            loadSexEvents()
+            self.entries = legacyLoadEntries()
+            self.sexEvents = legacyLoadSexEvents()
+            
+            self.symptoms = []
             
             saveSchema()
         }
@@ -409,12 +413,12 @@ class DataManager: ObservableObject {
         let cal = Calendar.current
         let day = cal.startOfDay(for: date)
 
-        // Actual period days
+        // 1. Actual period days
         if isPeriodActive(on: day) {
             return .period
         }
 
-        // Predicted windows (period & fertility)
+        // 2. Predicted windows (period + fertility)
         if let preds = predictions {
             let minD = cal.startOfDay(for: preds.min)
             let maxD = cal.startOfDay(for: preds.max)
@@ -425,7 +429,7 @@ class DataManager: ObservableObject {
                 return .lutealPrePeriod
             }
 
-            // Ovulation approx = expected - 14 -- See Documentation.
+            // Ovulation approx = expected - 14
             if let ovulation = cal.date(byAdding: .day, value: -14, to: expected) {
                 let ovD = cal.startOfDay(for: ovulation)
                 let fertileStart = cal.date(byAdding: .day, value: -5, to: ovD)!
@@ -457,13 +461,13 @@ class DataManager: ObservableObject {
             }
         }
 
-        // Default fallback
+        // 3. Default fallback
         return .follicular
     }
 
     // MARK: - Update Functions for Editing Existing Data
 
-    // Update an existing sexEvent protection status.
+    // Update an existing sex event's protection status.
     func updateSexEvent(on date: Date, protected: Bool) {
         
         let cal = Calendar.current
@@ -471,11 +475,11 @@ class DataManager: ObservableObject {
         
         if let index = sexEvents.firstIndex(where: { cal.isDate($0.date, inSameDayAs: normalized) }) {
             sexEvents[index].protected = protected
-            saveSexEvents()
+            saveSchema()
         }
     }
 
-    // Update bleeding level for a given day (via .edit in schema).
+    // Update bleeding level for a given day (edit mode).
     func updateBleeding(on date: Date, to level: Int) {
         let cal = Calendar.current
         let normalized = cal.startOfDay(for: date)
@@ -483,21 +487,21 @@ class DataManager: ObservableObject {
 
         if let index = entries.firstIndex(where: { cal.isDate($0.date, inSameDayAs: normalized) }) {
             entries[index].bleeding = clamped
-            saveEntries()
+            saveSchema()
             refreshAllLogic()
             debugPrintState(label: "updateBleeding")
         }
     }
 
-    // Update symptoms for a given day.
+    // Update symptoms for a given day (edit mode).
     func updateSymptoms(on date: Date, to newSet: Set<SymptomType>) {
         let cal = Calendar.current
         let normalized = cal.startOfDay(for: date)
 
-        // Remove existing symptoms for that day -- if needed.
+        // Remove existing symptoms for that day
         symptoms.removeAll { cal.isDate($0.date, inSameDayAs: normalized) }
 
-        // Add the updated set :)
+        // Add the updated set
         let updatedSymptoms = newSet.map {
             Symptom(id: UUID(), date: normalized, type: $0, intensity: nil, note: nil)
         }
@@ -544,7 +548,6 @@ class DataManager: ObservableObject {
         }
         
         self.hasCompletedOnboarding = true
-        saveEntries()
         saveSchema()
         refreshAllLogic()
     }
@@ -574,7 +577,7 @@ class DataManager: ObservableObject {
         refreshAllLogic()
     }
     
-    // MARK: - DEBUG INSPECTOR -- NOT VISIBLE TO END USER.
+    // MARK: - Debug Inspector
     func debugPrintState(label: String = "") {
         #if DEBUG
         let tag = label.isEmpty ? "" : " – \(label)"
