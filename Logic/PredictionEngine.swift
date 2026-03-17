@@ -2,11 +2,17 @@
 //  PredictionEngine.swift
 //  ULA Period Tracker
 //
-//  Created by eacalahorra.
+//  Created by eacalahorra on 18/11/25.
 //
 // for future reference. PAvC and BAvC are the Period Calculation logic. BAvC is simple and straight forward, the statistical average for period length based upon Mayo Clinic info... PAvC is an adaptive version of BAvC that "tries" to "predict" unregular cycles... it requires input from the user.
 
 import Foundation
+
+struct CycleForecast {
+    let periodWindow: (min: Date, expected: Date, max: Date)
+    let ovulationDate: Date
+    let fertileWindow: (start: Date, end: Date)
+}
 
 struct PredictionEngine {
     
@@ -18,6 +24,11 @@ struct PredictionEngine {
     
     func computeBAvC() -> Double {
         return defaultBAvCLength
+    }
+
+    func shouldUsePersonalizedPrediction(cycles: [Cycle], isRegularUser: Bool) -> Bool {
+        guard isRegularUser else { return false }
+        return cycles.count >= 3
     }
     
     func computePAvC(from cycles: [Cycle], maxCount: Int = 6) -> Double? {
@@ -39,11 +50,15 @@ struct PredictionEngine {
         return sqrt(variance)
     }
     
-    // MARK: -- Prediction Algos. -- god help me.
+    // God help me. -- Prediction Algos.
     
-    func predictedPeriodWindow(lastPeriodStart: Date, cycles: [Cycle]) -> (min: Date, expected: Date, max: Date)? {
+    func predictedPeriodWindow(
+        lastPeriodStart: Date,
+        cycles: [Cycle],
+        usePersonalizedPrediction: Bool = true
+    ) -> (min: Date, expected: Date, max: Date)? {
         let avg: Double
-        if cycles.count >= 3, let pavc = computePAvC(from: cycles) {
+        if usePersonalizedPrediction, cycles.count >= 3, let pavc = computePAvC(from: cycles) {
             avg = pavc
         } else {
             avg = computeBAvC()
@@ -51,7 +66,9 @@ struct PredictionEngine {
         
         guard avg > 0 && avg < 60 else { return nil }
         let std: Double
-        if cycles.count >= 4, let dev = computePAvCDeviation(from: cycles, usingAverage: avg) {
+        if usePersonalizedPrediction,
+           cycles.count >= 4,
+           let dev = computePAvCDeviation(from: cycles, usingAverage: avg) {
             std = dev
         } else {
             std = 3.0
@@ -79,5 +96,41 @@ struct PredictionEngine {
             return nil
         }
         return (start, end)
+    }
+
+    func forecastCycles(
+        lastPeriodStart: Date,
+        cycles: [Cycle],
+        count: Int = 6,
+        usePersonalizedPrediction: Bool = true
+    ) -> [CycleForecast] {
+        guard count > 0 else { return [] }
+
+        var forecasts: [CycleForecast] = []
+        var anchor = lastPeriodStart
+
+        for _ in 0..<count {
+            guard let periodWindow = predictedPeriodWindow(
+                    lastPeriodStart: anchor,
+                    cycles: cycles,
+                    usePersonalizedPrediction: usePersonalizedPrediction
+                  ),
+                  let ovulationDate = predictOvulation(expectedNextPeriodStart: periodWindow.expected),
+                  let fertileWindow = fertileWindow(ovulationDate: ovulationDate) else {
+                break
+            }
+
+            forecasts.append(
+                CycleForecast(
+                    periodWindow: periodWindow,
+                    ovulationDate: ovulationDate,
+                    fertileWindow: fertileWindow
+                )
+            )
+
+            anchor = periodWindow.expected
+        }
+
+        return forecasts
     }
 }

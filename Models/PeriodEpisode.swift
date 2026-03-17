@@ -2,7 +2,7 @@
 //  PeriodEpisode.swift
 //  ULA Period Tracker
 //  Refers to Period Prediction ±
-//  Created by eacalahorra.
+//  Created by eacalahorra on 18/11/25.
 //
 
 import Foundation
@@ -14,6 +14,6 @@ struct PeriodEpisode: Identifiable, Codable {
     let days: [DayEntry]
     
     var duration: Int {
-        Calendar.current.dateComponents([.day], from: startDate, to: endDate).day ?? 0
+        (Calendar.current.dateComponents([.day], from: startDate, to: endDate).day ?? 0) + 1
     }
 }

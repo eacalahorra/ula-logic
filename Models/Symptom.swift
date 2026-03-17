@@ -2,7 +2,7 @@
 //  Symptom.swift
 //  ULA Period Tracker.
 //
-//  Created by eacalahorra.
+//  Created by eacalahorra on 21/11/25.
 //
 
 import Foundation

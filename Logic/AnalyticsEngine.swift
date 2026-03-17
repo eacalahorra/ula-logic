@@ -2,7 +2,7 @@
 //  AnalyticsEngine.swift
 //  ULA Period Tracker
 //
-//  Created by eacalahorra.
+//  Created by eacalahorra on 19/11/25.
 //
 
 import Foundation
@@ -101,7 +101,9 @@ struct AnalyticsEngine {
         // ratio of variation vs mean
         let variability = std / Double(mean)
         
-        // It's heuristic. The more variability, the lower confidence.
+        // Heuristic: more variability → lower confidence
+        // variability 0.0 → 1.0 confidence
+        // variability 0.3+ → ~0
         let raw = 1.0 - min(variability / 0.3, 1.0)
         return PredictionConfidence(value: max(0.0, min(1.0, raw)))
     }

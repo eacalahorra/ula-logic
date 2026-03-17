@@ -2,9 +2,8 @@
 //  MoonPhaseEngine.swift
 //  ULA Period Tracker
 //
-//  Created by eacalahorra.
-//  Tracks MoonPhases via Math, correlating to the Calendar. It is a fun addition. 
-// --- CURRENTLY UNUSED ---
+//  Created by eacalahorra on 19/11/25.
+//  Tracks MoonPhases via Math, correlating to the Calendar. It is a fun addition.
 
 import Foundation
 

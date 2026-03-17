@@ -9,12 +9,6 @@ import Foundation
 import Combine
 import SwiftUI
 
-private struct PredictionSnapshot {
-    let min: Date
-    let expected: Date
-    let max: Date
-}
-
 #Preview {
     ContentView()
 }
@@ -27,17 +21,18 @@ class DataManager: ObservableObject {
     @Published var periods: [PeriodEpisode] = []
     @Published var cycles: [Cycle] = []
     @Published var irregularCycles: [IrregularCycle] = []
+    @Published var forecasts: [CycleForecast] = []
     @Published var predictions: (min: Date, expected: Date, max: Date)?
     @Published var ovulationDate: Date?
     @Published var fertileWindow: (start: Date, end: Date)?
-    @Published var phasesForCalendar: [Date: CyclePhase] = [:]
+    @Published var phasesForCalendar: [Date: UlaCyclePhase] = [:]
     @Published var moonPhasesForCalendar: [Date: MoonPhase] = [:]
     @Published var sexEvents: [SexEvent] = []
     @Published var symptoms: [Symptom] = []
     @Published var externalSDISRequest: SDISRequest? = nil
     @Published var hasCompletedOnboarding: Bool = false
     @Published var isRegularUser: Bool = true
-    @Published var onboardingLastPeriodEnd: Date? = nil
+    @Published var onboardingLastPeriodStart: Date? = nil
 
     // MARK: - Day Summary Struct for UI Popover
     struct DaySummary {
@@ -56,19 +51,29 @@ class DataManager: ObservableObject {
     private let detector = PeriodDetector()
     private let analyzer = CycleAnalyzer()
     private let predictionEngine = PredictionEngine()
-    private let phaseEngine = PhaseEngine()
-    private let storage = JSONStorage()
+    private let storage: any LocalStorage
     private let legacyEntriesFile = "DayEntry.json" // Legacy Storage, see Schema.
     private let moonEngine = MoonPhaseEngine()
     private let legacySexEventsFile = "SexEvents.json" // Legacy Storage, see Schema.
     private let schemaFile = "ULAData.json"
     private let currentSchemaVersion = 1
     private let symptomsEngine = SymptomsEngine()
-    private var lastPredictionSnapshot: PredictionSnapshot?
     
     // MARK: - Init
     init() {
+        self.storage = JSONStorage()
+
         loadSchema()
+        refreshAllLogic()
+    }
+
+    init(storage: any LocalStorage, shouldLoadPersistedState: Bool = true) {
+        self.storage = storage
+
+        if shouldLoadPersistedState {
+            loadSchema()
+        }
+
         refreshAllLogic()
     }
     
@@ -83,68 +88,78 @@ class DataManager: ObservableObject {
         cycles = cycleResult.cycles
         irregularCycles = cycleResult.irregular
         
-        guard let lastPeriod = periods.last?.startDate else {
+        guard let lastPeriod = predictionAnchorDate() else {
+            forecasts = []
             predictions = nil
             ovulationDate = nil
             fertileWindow = nil
             phasesForCalendar = [:]
+            moonPhasesForCalendar = [:]
             return
         }
-        
-        // Predict next period window
-        predictions = predictionEngine.predictedPeriodWindow(
-            lastPeriodStart: lastPeriod,
-            cycles: cycles
+
+        let usePersonalizedPrediction = predictionEngine.shouldUsePersonalizedPrediction(
+            cycles: cycles,
+            isRegularUser: isRegularUser
         )
-        
-        // Ovulation
-        if let predicted = predictions {
-            ovulationDate = predictionEngine.predictOvulation(
-                expectedNextPeriodStart: predicted.expected
-            )
+
+        forecasts = predictionEngine.forecastCycles(
+            lastPeriodStart: lastPeriod,
+            cycles: cycles,
+            count: 6,
+            usePersonalizedPrediction: usePersonalizedPrediction
+        )
+
+        if let firstForecast = forecasts.first {
+            predictions = firstForecast.periodWindow
+            ovulationDate = firstForecast.ovulationDate
+            fertileWindow = firstForecast.fertileWindow
+        } else {
+            predictions = nil
+            ovulationDate = nil
+            fertileWindow = nil
         }
-        
-        // Fertile window
-        if let ovu = ovulationDate {
-            fertileWindow = predictionEngine.fertileWindow(ovulationDate: ovu)
+
+        phasesForCalendar = computePhasesForForecastRange()
+    }
+
+    private func predictionAnchorDate() -> Date? {
+        if let lastPeriodStart = periods.last?.startDate {
+            return lastPeriodStart
         }
-        
-        // Calendar phases for current month
-        phasesForCalendar = computePhasesForCurrentMonth(lastPeriodStart: lastPeriod)
+
+        return onboardingLastPeriodStart
     }
     
-    // MARK: - Phase Computation for current month.
+    // MARK: - Phase Computation for forecast range.
     
-    private func computePhasesForCurrentMonth(lastPeriodStart: Date) -> [Date: CyclePhase] {
-        guard let predictions = predictions else { return [:] }
-        
-        let today = Calendar.current.startOfDay(for: Date())
-        guard let range = Calendar.current.range(of: .day, in: .month, for: today),
-              let monthStart = Calendar.current.date(from: Calendar.current.dateComponents([.year, .month], from: today))
+    private func computePhasesForForecastRange() -> [Date: UlaCyclePhase] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        guard let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: today)),
+              let horizonMonth = calendar.date(byAdding: .month, value: 5, to: monthStart),
+              let monthRange = calendar.range(of: .day, in: .month, for: horizonMonth),
+              let rangeEnd = calendar.date(byAdding: .day, value: monthRange.count - 1, to: horizonMonth)
         else {
             return [:]
         }
-        
-        let dates = range.compactMap { day -> Date? in
-            Calendar.current.date(byAdding: .day, value: day - 1, to: monthStart)
-        }
-        
-        var phases: [Date: CyclePhase] = [:]
+
+        var phases: [Date: UlaCyclePhase] = [:]
         var moonPhases: [Date: MoonPhase] = [:]
-        
-        for date in dates {
-            let startOfDay = Calendar.current.startOfDay(for: date)
+
+        var current = monthStart
+        while current <= rangeEnd {
+            let startOfDay = calendar.startOfDay(for: current)
             // Moon Phases
             moonPhases[startOfDay] = moonEngine.phase(for: startOfDay)
-            // MARK: MENSTRUAL PHASES
-            phases[startOfDay] = phaseEngine.phase(
-                for: startOfDay,
-                lastPeriodStart: lastPeriodStart,
-                predictedWindow: predictions,
-                ovulationDate: ovulationDate,
-                fertileWindow: fertileWindow
-            )
+            phases[startOfDay] = phase(on: startOfDay)
+
+            guard let next = calendar.date(byAdding: .day, value: 1, to: current) else {
+                break
+            }
+            current = next
         }
+
         moonPhasesForCalendar = moonPhases
         return phases
     }
@@ -221,17 +236,6 @@ class DataManager: ObservableObject {
             return
         }
         
-        // Snapshot current prediction window so we can undo later if needed.
-        if let currentPred = predictions {
-            lastPredictionSnapshot = PredictionSnapshot(
-                min: currentPred.min,
-                expected: currentPred.expected,
-                max: currentPred.max
-            )
-        } else {
-            lastPredictionSnapshot = nil
-        }
-        
         let level = max(1, min(4, bleedingLevel))
         
         // Check if data exists for date.
@@ -266,12 +270,6 @@ class DataManager: ObservableObject {
         entries.sort { $0.date < $1.date }
         saveSchema()
         refreshAllLogic()
-        
-        // If we have a previous prediction snapshot, restore it.
-        if let snapshot = lastPredictionSnapshot {
-            predictions = (min: snapshot.min, expected: snapshot.expected, max: snapshot.max)
-            lastPredictionSnapshot = nil
-        }
         debugPrintState(label: "undoPeriodStart on \(normalized)")
     }
     
@@ -332,7 +330,7 @@ class DataManager: ObservableObject {
             symptoms: symptoms,
             hasCompletedOnboarding: hasCompletedOnboarding,
             isRegularUser: isRegularUser,
-            onboardingLastPeriodEnd: onboardingLastPeriodEnd
+            onboardingLastPeriodStart: onboardingLastPeriodStart
             
         )
         storage.save(wrapper, to: schemaFile)
@@ -344,6 +342,9 @@ class DataManager: ObservableObject {
             self.entries = wrapper.entries
             self.sexEvents = wrapper.sexEvents
             self.symptoms = wrapper.symptoms ?? []
+            self.hasCompletedOnboarding = wrapper.hasCompletedOnboarding
+            self.isRegularUser = wrapper.isRegularUser
+            self.onboardingLastPeriodStart = wrapper.onboardingLastPeriodStart
             
             if wrapper.schemaVersion < currentSchemaVersion {
                 migrateSchema(from: wrapper)
@@ -381,6 +382,19 @@ class DataManager: ObservableObject {
         return isPeriodActive(on: Date())
     }
 
+    func currentPeriodStartDate(on date: Date) -> Date? {
+        let cal = Calendar.current
+        let target = cal.startOfDay(for: date)
+
+        for episode in periods {
+            if episode.startDate <= target && target <= episode.endDate {
+                return episode.startDate
+            }
+        }
+
+        return nil
+    }
+
     // MARK: - Day Summary Builder
     func summary(for date: Date) -> DaySummary {
         let cal = Calendar.current
@@ -413,70 +427,53 @@ class DataManager: ObservableObject {
         let cal = Calendar.current
         let day = cal.startOfDay(for: date)
 
-        // 1. Actual period days
         if isPeriodActive(on: day) {
             return .period
         }
 
-        // 2. Predicted windows (period + fertility)
-        if let preds = predictions {
-            let minD = cal.startOfDay(for: preds.min)
-            let maxD = cal.startOfDay(for: preds.max)
-            let expected = cal.startOfDay(for: preds.expected)
+        for forecast in forecasts {
+            let periodWindow = forecast.periodWindow
+            let minD = cal.startOfDay(for: periodWindow.min)
+            let maxD = cal.startOfDay(for: periodWindow.max)
+            let ovulationDay = cal.startOfDay(for: forecast.ovulationDate)
+            let fertileStart = cal.startOfDay(for: forecast.fertileWindow.start)
+            let fertileEnd = cal.startOfDay(for: forecast.fertileWindow.end)
 
-            // Predicted period window
+            if cal.isDate(day, inSameDayAs: ovulationDay) {
+                return .ovulation
+            }
+
+            if day >= fertileStart && day <= fertileEnd {
+                return .peakFertility
+            }
+
             if day >= minD && day <= maxD {
                 return .lutealPrePeriod
             }
 
-            // Ovulation approx = expected - 14
-            if let ovulation = cal.date(byAdding: .day, value: -14, to: expected) {
-                let ovD = cal.startOfDay(for: ovulation)
-                let fertileStart = cal.date(byAdding: .day, value: -5, to: ovD)!
-                let fertileEnd = cal.date(byAdding: .day, value: 1, to: ovD)!
-                let fStart = cal.startOfDay(for: fertileStart)
-                let fEnd = cal.startOfDay(for: fertileEnd)
-
-                if day >= fStart && day <= fEnd {
-                    if cal.isDate(day, inSameDayAs: ovD) {
-                        return .follicularOvo
-                    }
-                    return .peakFertility
-                }
-            }
-            
-            if let preds = predictions,
-                let expected = predictions?.expected,
-                let ovulation = cal.date(byAdding: .day, value: -14, to: expected) {
-                
-                let ovD = cal.startOfDay(for: ovulation)
-                let fertileEnd = cal.startOfDay(for: cal.date(byAdding: .day, value: 1, to: ovD)!)
-                let predictedMin = cal.startOfDay(for: preds.min)
-                
-                if fertileEnd < predictedMin,
-                    day > fertileEnd,
-                    day < predictedMin {
-                    return .luteal
-                }
+            if day > fertileEnd && day < minD {
+                return .luteal
             }
         }
 
-        // 3. Default fallback
         return .follicular
     }
 
     // MARK: - Update Functions for Editing Existing Data
 
-    // Update an existing sex event's protection status.
-    func updateSexEvent(on date: Date, protected: Bool) {
-        
+    // Update all logged sex events for a day to match the day-level edit UI.
+    func updateSexEvents(on date: Date, protected: Bool) {
         let cal = Calendar.current
         let normalized = cal.startOfDay(for: date)
-        
-        if let index = sexEvents.firstIndex(where: { cal.isDate($0.date, inSameDayAs: normalized) }) {
+
+        let indexes = sexEvents.indices.filter { cal.isDate(sexEvents[$0].date, inSameDayAs: normalized) }
+        guard !indexes.isEmpty else { return }
+
+        for index in indexes {
             sexEvents[index].protected = protected
-            saveSchema()
         }
+
+        saveSchema()
     }
 
     // Update bleeding level for a given day (edit mode).
@@ -512,44 +509,29 @@ class DataManager: ObservableObject {
     }
 
     // MARK: Onboarding Functions.
-    func applyOnboardingData(isRegular: Bool, lastPeriodEnd: Date?) {
+    func applyOnboardingData(isRegular: Bool, lastPeriodStart: Date?) {
         self.isRegularUser = isRegular
-        self.onboardingLastPeriodEnd = lastPeriodEnd
-        
-        if let endDate = lastPeriodEnd {
-            let cal = Calendar.current
-            let normalizedEnd = cal.startOfDay(for: endDate)
-            
-            guard let assumedStart = cal.date(byAdding: .day, value: -4, to: normalizedEnd) else {
-                self.hasCompletedOnboarding = true
-                saveSchema()
-                refreshAllLogic()
-                return
-            }
-            
-            entries.removeAll { entry in
-                let d = cal.startOfDay(for: entry.date)
-                return d >= assumedStart && d <= normalizedEnd
-            }
-            
-            for offset in 0..<5 {
-                if let day = cal.date(byAdding: .day, value: offset, to: assumedStart) {
-                    let isStart = (offset == 0)
-                    let newEntry = DayEntry(
-                        date: day,
-                        bleeding: 2,
-                        isPeriodStart: isStart
-                    )
-                    entries.append(newEntry)
-                }
-            }
-            
-            entries.sort { $0.date < $1.date }
-        }
-        
+        self.onboardingLastPeriodStart = lastPeriodStart
+
         self.hasCompletedOnboarding = true
         saveSchema()
         refreshAllLogic()
+    }
+
+    func nextUpcomingPeriodForecast(from date: Date = Date()) -> CycleForecast? {
+        let target = Calendar.current.startOfDay(for: date)
+
+        return forecasts.first { forecast in
+            Calendar.current.startOfDay(for: forecast.periodWindow.expected) >= target
+        }
+    }
+
+    func nextUpcomingOvulationForecast(from date: Date = Date()) -> CycleForecast? {
+        let target = Calendar.current.startOfDay(for: date)
+
+        return forecasts.first { forecast in
+            Calendar.current.startOfDay(for: forecast.ovulationDate) >= target
+        }
     }
     
     // MARK: DELETE ALL DATA
@@ -559,6 +541,7 @@ class DataManager: ObservableObject {
         periods.removeAll()
         cycles.removeAll()
         irregularCycles.removeAll()
+        forecasts.removeAll()
         sexEvents.removeAll()
         symptoms.removeAll()
         
@@ -567,10 +550,10 @@ class DataManager: ObservableObject {
         fertileWindow = nil
         phasesForCalendar = [:]
         moonPhasesForCalendar = [:]
-        lastPredictionSnapshot = nil
         hasCompletedOnboarding = false
         isRegularUser = true
-        onboardingLastPeriodEnd = nil
+        onboardingLastPeriodStart = nil
+        UserDefaults.standard.set(false, forKey: "onboardingCompleted")
         
         saveSchema()
         

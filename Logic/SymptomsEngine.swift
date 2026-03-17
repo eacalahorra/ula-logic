@@ -2,7 +2,7 @@
 //  SymptomsEngine.swift
 //  Ula
 //
-//  Created by eacalahorra.
+//  Created by eacalahorra on 21/11/25.
 //
 
 import Foundation

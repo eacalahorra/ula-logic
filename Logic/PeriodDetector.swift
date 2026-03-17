@@ -2,7 +2,7 @@
 //  PeriodDetector.swift
 //  ULA Period Tracker
 //
-//  Created by eacalahorra.
+//  Created by eacalahorra on 18/11/25.
 //
 
 import Foundation
@@ -19,7 +19,6 @@ struct PeriodDetector {
         
         var loggedBleedingDates: [Date] = []
         var lastBleedingDate: Date? = nil
-        var firstZeroDate: Date? = nil
         var secondZeroDate: Date? = nil
         
         for entry in sorted {
@@ -31,7 +30,10 @@ struct PeriodDetector {
                 
                 currentStart = entry.date
                 currentDays = [entry]
+                loggedBleedingDates = [entry.date]
+                lastBleedingDate = entry.bleeding > 0 ? entry.date : nil
                 pendingZeroCount = 0
+                secondZeroDate = nil
                 continue
             }
             // MARK: if period is active -- If something breaks with period functions is this, especially regarding ending a period.
@@ -48,7 +50,6 @@ struct PeriodDetector {
                     // WHEN bleeding = 0, possible end, check the next day. If bleeding = 0 next day... done.
                     pendingZeroCount += 1
                     if pendingZeroCount == 1 {
-                        firstZeroDate = entry.date
                         continue
                     }
                     if pendingZeroCount >= 2 {
@@ -59,8 +60,9 @@ struct PeriodDetector {
                         }
                         currentStart = nil
                         currentDays = []
+                        loggedBleedingDates = []
+                        lastBleedingDate = nil
                         pendingZeroCount = 0
-                        firstZeroDate = nil
                         secondZeroDate = nil
                     }
                 }
@@ -112,7 +114,6 @@ struct PeriodDetector {
                 days: currentDays
             )
             episodes.append(episode)
-            firstZeroDate = nil
         }
 
         return episodes

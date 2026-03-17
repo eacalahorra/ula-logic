@@ -2,7 +2,7 @@
 //  Cycle.swift
 //  ULA Period Tracker
 //
-//  Created by eacalahorra.
+//  Created by eacalahorra on 18/11/25.
 //
 
 import Foundation

@@ -1,21 +1,12 @@
 //
 //  PhaseEngine.swift
 //  ULA Period Tracker
-//  Created by eacalahorra.
+//  Created by eacalahorra on 19/11/25.
 //  Handles the logic for phase tracking, based on PredictionEngine...
 //  Goes: Bleeding -> Fertile -> Ovulation -> Luteal -> Follicular -> Bleeding -> etc...
 //  Update: bleeding is now captured via DayEntry exclusively... as otherwise, bleeding overtakes other phases. 
 
 import Foundation
-
-enum CyclePhase: String, Codable {
-    case bleeding
-    case follicular
-    case fertileWindow
-    case ovulation
-    case luteal
-    case unknown
-}
 
 struct PhaseEngine {
     
@@ -27,37 +18,43 @@ struct PhaseEngine {
         predictedWindow: (min: Date, expected: Date, max: Date),
         ovulationDate: Date?,
         fertileWindow: (start: Date, end: Date)?
-    ) -> CyclePhase {
+    ) -> UlaCyclePhase {
         
         let startOfDay = calendar.startOfDay(for: date)
-        // Fertile Window
-        if let fertile = fertileWindow {
-            if startOfDay >= calendar.startOfDay(for: fertile.start) &&
-                startOfDay <= calendar.startOfDay(for: fertile.end) {
-                return .fertileWindow
-            }
-        }
-        // Ovulation
+
         if let ovu = ovulationDate {
             let ovulationDay = calendar.startOfDay(for: ovu)
             if startOfDay == ovulationDay {
                 return .ovulation
             }
         }
-        // Luteal Phase -- Calc'd based on Ovu, to pre next period.
-        if let ovu = ovulationDate {
-            if startOfDay > calendar.startOfDay(for: ovu) &&
-                startOfDay < calendar.startOfDay(for: predictedWindow.expected) {
+
+        if let fertile = fertileWindow {
+            if startOfDay >= calendar.startOfDay(for: fertile.start) &&
+                startOfDay <= calendar.startOfDay(for: fertile.end) {
+                return .peakFertility
+            }
+        }
+
+        let predictedMin = calendar.startOfDay(for: predictedWindow.min)
+        let predictedMax = calendar.startOfDay(for: predictedWindow.max)
+
+        if startOfDay >= predictedMin && startOfDay <= predictedMax {
+            return .lutealPrePeriod
+        }
+
+        if let fertile = fertileWindow {
+            let fertileEnd = calendar.startOfDay(for: fertile.end)
+            if startOfDay > fertileEnd && startOfDay < predictedMin {
                 return .luteal
             }
         }
-        // Follicular phase for after bleeding, but before Fertile prediction. (Only when not bleeding)
-        if startOfDay > calendar.startOfDay(for: lastPeriodStart) &&
-            startOfDay < calendar.startOfDay(for: predictedWindow.min) {
+
+        if startOfDay > calendar.startOfDay(for: lastPeriodStart) {
             return .follicular
         }
         
-        return .unknown
+        return .follicular
     }
     
     func phasesForMonth(
@@ -66,9 +63,9 @@ struct PhaseEngine {
         predictedWindow: (min: Date, expected: Date, max: Date),
         ovulationDate: Date?,
         fertileWindow: (start: Date, end: Date)?
-    ) -> [Date: CyclePhase] {
+    ) -> [Date: UlaCyclePhase] {
         
-        var result: [Date: CyclePhase] = [:]
+        var result: [Date: UlaCyclePhase] = [:]
         
         for date in dates {
             result[date] = phase(

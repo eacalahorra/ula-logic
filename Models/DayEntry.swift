@@ -2,7 +2,7 @@
 //  DayEntry.swift
 //  ULA Period Tracker
 //  Handles basic Day to Day Reporting.
-//  Created by eacalahorra.
+//  Created by eacalahorra on 18/11/25.
 //
 
 import Foundation
@@ -10,7 +10,7 @@ import Foundation
 struct DayEntry: Identifiable, Codable {
     let id: UUID
     let date: Date
-    var bleeding: Int // 0 to 4 , none to heavy...
+    var bleeding: Int // 0 to 5 , none to heavy...
     var symptoms: [String]
     var notes: String?
     var isPeriodStart: Bool

@@ -2,7 +2,7 @@
 //  SexEvent.swift
 //  ULA Period tracker
 //
-//  Created by eacalahorra.
+//  Created by eacalahorra on 18/11/25.
 //
 
 import Foundation
